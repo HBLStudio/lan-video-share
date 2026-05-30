@@ -4,7 +4,13 @@ const state = {
   activeId: "",
   thumbnailObserver: null,
   progress: {},
+  preferences: {
+    blocked: {},
+    favorite: {}
+  },
+  showBlocked: false,
   saveTimer: null,
+  preferenceSaveTimer: null,
   pendingResumeId: "",
   ignoreProgressVideoId: "",
   lastSaveAt: 0,
@@ -23,12 +29,14 @@ const elements = {
   nowName: document.querySelector("#nowName"),
   nowFolder: document.querySelector("#nowFolder"),
   listPanel: document.querySelector("#listPanel"),
+  showBlockedButton: document.querySelector("#showBlockedButton"),
   videoList: document.querySelector("#videoList"),
   emptyState: document.querySelector("#emptyState"),
   fullscreenButton: document.querySelector("#fullscreenButton")
 };
 
 const STORAGE_KEY = "lan-video-share-progress-v1";
+const PREFERENCES_KEY = "lan-video-share-preferences-v1";
 const WATCHED_RATIO = 0.9;
 const RESUME_OFFSET_SECONDS = 2;
 
@@ -50,6 +58,37 @@ function saveProgressNow() {
 function saveProgressSoon() {
   window.clearTimeout(state.saveTimer);
   state.saveTimer = window.setTimeout(saveProgressNow, 300);
+}
+
+function loadPreferences() {
+  try {
+    const value = window.localStorage.getItem(PREFERENCES_KEY);
+    state.preferences = value ? JSON.parse(value) : state.preferences;
+  } catch {
+    state.preferences = {
+      blocked: {},
+      favorite: {}
+    };
+  }
+}
+
+function savePreferencesNow() {
+  window.clearTimeout(state.preferenceSaveTimer);
+  state.preferenceSaveTimer = null;
+  window.localStorage.setItem(PREFERENCES_KEY, JSON.stringify(state.preferences));
+}
+
+function savePreferencesSoon() {
+  window.clearTimeout(state.preferenceSaveTimer);
+  state.preferenceSaveTimer = window.setTimeout(savePreferencesNow, 200);
+}
+
+function isFavorite(videoId) {
+  return Boolean(state.preferences.favorite[videoId]);
+}
+
+function isBlocked(videoId) {
+  return Boolean(state.preferences.blocked[videoId]);
 }
 
 function getProgress(videoId) {
@@ -74,13 +113,34 @@ function isWatched(videoId) {
 }
 
 function sortVideos(videos) {
-  return [...videos].sort((a, b) => {
+  const visibleVideos = state.showBlocked
+    ? [...videos]
+    : videos.filter((video) => !isBlocked(video.id) || video.id === state.activeId);
+
+  return visibleVideos.sort((a, b) => {
+    const blockedDelta = Number(isBlocked(a.id)) - Number(isBlocked(b.id));
+    if (blockedDelta !== 0) {
+      return blockedDelta;
+    }
+
+    const favoriteDelta = Number(isFavorite(b.id)) - Number(isFavorite(a.id));
+    if (favoriteDelta !== 0) {
+      return favoriteDelta;
+    }
+
     const watchedDelta = Number(isWatched(a.id)) - Number(isWatched(b.id));
     if (watchedDelta !== 0) {
       return watchedDelta;
     }
     return a.name.localeCompare(b.name, "zh-Hans-CN");
   });
+}
+
+function refreshFilteredVideos() {
+  state.filtered = sortVideos(state.videos);
+  if (state.activeId && !state.filtered.some((video) => video.id === state.activeId)) {
+    state.activeId = "";
+  }
 }
 
 function formatBytes(bytes) {
@@ -142,6 +202,44 @@ function updateActiveItem() {
 
 function updateFullscreenButton() {
   elements.fullscreenButton.disabled = state.filtered.length === 0;
+}
+
+function updateShowBlockedButton() {
+  const blockedCount = state.videos.filter((video) => isBlocked(video.id)).length;
+  elements.showBlockedButton.textContent = state.showBlocked
+    ? `隐藏拉黑 (${blockedCount})`
+    : `显示拉黑 (${blockedCount})`;
+  elements.showBlockedButton.disabled = blockedCount === 0;
+}
+
+function toggleFavorite(videoId) {
+  if (isFavorite(videoId)) {
+    delete state.preferences.favorite[videoId];
+  } else {
+    state.preferences.favorite[videoId] = Date.now();
+    delete state.preferences.blocked[videoId];
+  }
+  savePreferencesSoon();
+  refreshFilteredVideos();
+  renderList();
+}
+
+function toggleBlocked(videoId) {
+  if (isBlocked(videoId)) {
+    delete state.preferences.blocked[videoId];
+  } else {
+    state.preferences.blocked[videoId] = Date.now();
+    delete state.preferences.favorite[videoId];
+  }
+  savePreferencesSoon();
+  refreshFilteredVideos();
+  renderList();
+}
+
+function toggleShowBlocked() {
+  state.showBlocked = !state.showBlocked;
+  refreshFilteredVideos();
+  renderList();
 }
 
 function stopPreview() {
@@ -251,6 +349,7 @@ function renderList() {
   elements.videoList.innerHTML = "";
   elements.emptyState.hidden = state.filtered.length > 0;
   updateFullscreenButton();
+  updateShowBlockedButton();
 
   const fragment = document.createDocumentFragment();
   for (const video of state.filtered) {
@@ -258,6 +357,12 @@ function renderList() {
     button.className = `video-item${video.id === state.activeId ? " active" : ""}`;
     if (isWatched(video.id)) {
       button.classList.add("watched");
+    }
+    if (isFavorite(video.id)) {
+      button.classList.add("favorite");
+    }
+    if (isBlocked(video.id)) {
+      button.classList.add("blocked");
     }
     button.type = "button";
     button.dataset.id = video.id;
@@ -281,7 +386,13 @@ function renderList() {
 
     const badge = document.createElement("span");
     badge.className = "thumb-badge";
-    badge.textContent = isWatched(video.id) ? "已看" : "长按预览";
+    if (isBlocked(video.id)) {
+      badge.textContent = "拉黑";
+    } else if (isFavorite(video.id)) {
+      badge.textContent = "收藏";
+    } else {
+      badge.textContent = isWatched(video.id) ? "已看" : "长按预览";
+    }
 
     const progressBar = document.createElement("span");
     progressBar.className = "thumb-progress";
@@ -308,8 +419,53 @@ function renderList() {
     const modified = document.createElement("span");
     modified.textContent = formatDate(video.modifiedAt);
 
+    const actions = document.createElement("div");
+    actions.className = "video-actions";
+
+    const favoriteButton = document.createElement("span");
+    favoriteButton.className = `video-action${isFavorite(video.id) ? " active" : ""}`;
+    favoriteButton.role = "button";
+    favoriteButton.tabIndex = 0;
+    favoriteButton.textContent = isFavorite(video.id) ? "已收藏" : "收藏";
+
+    const blockedButton = document.createElement("span");
+    blockedButton.className = `video-action danger${isBlocked(video.id) ? " active" : ""}`;
+    blockedButton.role = "button";
+    blockedButton.tabIndex = 0;
+    blockedButton.textContent = isBlocked(video.id) ? "恢复" : "拉黑";
+
+    favoriteButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleFavorite(video.id);
+    });
+    favoriteButton.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleFavorite(video.id);
+      }
+    });
+    favoriteButton.addEventListener("pointerdown", (event) => event.stopPropagation());
+
+    blockedButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleBlocked(video.id);
+    });
+    blockedButton.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleBlocked(video.id);
+      }
+    });
+    blockedButton.addEventListener("pointerdown", (event) => event.stopPropagation());
+
+    actions.append(favoriteButton, blockedButton);
+
     meta.append(folder, size, modified);
-    detail.append(title, meta);
+    detail.append(title, meta, actions);
     button.append(thumb, detail);
     button.addEventListener("click", (event) => {
       if (state.preview.started) {
@@ -406,7 +562,7 @@ async function loadVideos() {
 
   const data = await response.json();
   state.videos = data.videos;
-  state.filtered = sortVideos(state.videos);
+  refreshFilteredVideos();
   renderList();
 }
 
@@ -444,7 +600,13 @@ function updateVideoCardProgress(videoId) {
   item.classList.toggle("watched", watched);
   const badge = item.querySelector(".thumb-badge");
   if (badge) {
-    badge.textContent = watched ? "已看" : "长按预览";
+    if (isBlocked(videoId)) {
+      badge.textContent = "拉黑";
+    } else if (isFavorite(videoId)) {
+      badge.textContent = "收藏";
+    } else {
+      badge.textContent = watched ? "已看" : "长按预览";
+    }
   }
 
   const progressBar = item.querySelector(".thumb-progress");
@@ -471,7 +633,9 @@ function resumeActiveVideo() {
 }
 
 loadProgress();
+loadPreferences();
 elements.fullscreenButton.addEventListener("click", requestSmartFullscreen);
+elements.showBlockedButton.addEventListener("click", toggleShowBlocked);
 elements.player.addEventListener("loadedmetadata", resumeActiveVideo);
 elements.player.addEventListener("timeupdate", () => {
   const now = Date.now();
@@ -483,7 +647,7 @@ elements.player.addEventListener("timeupdate", () => {
 elements.player.addEventListener("pause", () => updateVideoProgress());
 elements.player.addEventListener("ended", () => {
   updateVideoProgress({ completed: true });
-  state.filtered = sortVideos(state.videos);
+  refreshFilteredVideos();
   renderList();
   const nextUnwatched = state.filtered.find((video) => !isWatched(video.id));
   if (nextUnwatched) {
@@ -495,6 +659,7 @@ elements.player.addEventListener("ended", () => {
 window.addEventListener("pagehide", () => {
   updateVideoProgress();
   saveProgressNow();
+  savePreferencesNow();
 });
 document.addEventListener("fullscreenchange", () => {
   if (!document.fullscreenElement && screen.orientation?.unlock) {
@@ -507,3 +672,9 @@ loadVideos().catch((error) => {
   elements.emptyState.hidden = false;
   elements.emptyState.textContent = "无法读取视频列表";
 });
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  });
+}

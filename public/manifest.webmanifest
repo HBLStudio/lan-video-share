@@ -1,0 +1,19 @@
+{
+  "name": "局域网视频共享",
+  "short_name": "局域网视频",
+  "description": "在局域网内浏览和播放 Windows 共享目录中的视频。",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#101214",
+  "theme_color": "#101214",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
