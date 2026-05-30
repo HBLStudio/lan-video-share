@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>局域网视频共享</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="layout">
+      <section class="player-panel">
+        <div id="playerShell" class="player-shell">
+          <video id="player" controls playsinline preload="metadata"></video>
+          <div id="rotateHint" class="rotate-hint" hidden>横屏视频，旋转手机观看更舒服</div>
+        </div>
+        <div class="now-playing">
+          <div id="nowName"></div>
+          <div id="nowFolder"></div>
+        </div>
+        <div class="fullscreen-action" aria-label="全屏播放">
+          <button id="fullscreenButton" type="button">全屏播放</button>
+        </div>
+      </section>
+
+      <section id="listPanel" class="list-panel">
+        <div id="videoList" class="video-list"></div>
+        <div id="emptyState" class="empty" hidden>没有找到视频</div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "name": "lan-video-share",
+  "version": "1.0.0",
+  "description": "Share a Windows folder over LAN so phones and other clients can browse and play videos in a browser.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "lint": "node scripts/lint.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "lan",
+    "video",
+    "share",
+    "windows"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}
