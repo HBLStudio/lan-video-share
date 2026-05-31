@@ -10,7 +10,6 @@ const state = {
   },
   showBlocked: false,
   saveTimer: null,
-  preferenceSaveTimer: null,
   pendingResumeId: "",
   ignoreProgressVideoId: "",
   lastSaveAt: 0,
@@ -36,7 +35,6 @@ const elements = {
 };
 
 const STORAGE_KEY = "lan-video-share-progress-v1";
-const PREFERENCES_KEY = "lan-video-share-preferences-v1";
 const WATCHED_RATIO = 0.9;
 const RESUME_OFFSET_SECONDS = 2;
 
@@ -60,27 +58,19 @@ function saveProgressSoon() {
   state.saveTimer = window.setTimeout(saveProgressNow, 300);
 }
 
-function loadPreferences() {
-  try {
-    const value = window.localStorage.getItem(PREFERENCES_KEY);
-    state.preferences = value ? JSON.parse(value) : state.preferences;
-  } catch {
-    state.preferences = {
-      blocked: {},
-      favorite: {}
-    };
+function normalizePreferences(value) {
+  return {
+    blocked: value?.blocked && typeof value.blocked === "object" ? value.blocked : {},
+    favorite: value?.favorite && typeof value.favorite === "object" ? value.favorite : {}
+  };
+}
+
+async function loadPreferences() {
+  const response = await fetch(`/api/preferences${getTokenQuery()}`);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
   }
-}
-
-function savePreferencesNow() {
-  window.clearTimeout(state.preferenceSaveTimer);
-  state.preferenceSaveTimer = null;
-  window.localStorage.setItem(PREFERENCES_KEY, JSON.stringify(state.preferences));
-}
-
-function savePreferencesSoon() {
-  window.clearTimeout(state.preferenceSaveTimer);
-  state.preferenceSaveTimer = window.setTimeout(savePreferencesNow, 200);
+  state.preferences = normalizePreferences(await response.json());
 }
 
 function isFavorite(videoId) {
@@ -212,28 +202,70 @@ function updateShowBlockedButton() {
   elements.showBlockedButton.disabled = blockedCount === 0;
 }
 
-function toggleFavorite(videoId) {
-  if (isFavorite(videoId)) {
-    delete state.preferences.favorite[videoId];
-  } else {
-    state.preferences.favorite[videoId] = Date.now();
-    delete state.preferences.blocked[videoId];
+function applyPreferenceAction(action, videoId, preferences = state.preferences) {
+  const next = normalizePreferences({
+    blocked: { ...preferences.blocked },
+    favorite: { ...preferences.favorite }
+  });
+  if (action === "favorite") {
+    next.favorite[videoId] = Date.now();
+    delete next.blocked[videoId];
+  } else if (action === "unfavorite") {
+    delete next.favorite[videoId];
+  } else if (action === "block") {
+    next.blocked[videoId] = Date.now();
+    delete next.favorite[videoId];
+  } else if (action === "unblock") {
+    delete next.blocked[videoId];
   }
-  savePreferencesSoon();
+  return next;
+}
+
+function refreshPreferencesUi() {
   refreshFilteredVideos();
   renderList();
 }
 
-function toggleBlocked(videoId) {
-  if (isBlocked(videoId)) {
-    delete state.preferences.blocked[videoId];
-  } else {
-    state.preferences.blocked[videoId] = Date.now();
-    delete state.preferences.favorite[videoId];
+async function savePreferenceAction(action, videoId, previousPreferences) {
+  try {
+    const response = await fetch(`/api/preferences${getTokenQuery()}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ action, videoId })
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    state.preferences = normalizePreferences(await response.json());
+  } catch (error) {
+    state.preferences = previousPreferences;
+    elements.nowName.textContent = `同步失败：${error.message}`;
   }
-  savePreferencesSoon();
-  refreshFilteredVideos();
-  renderList();
+  refreshPreferencesUi();
+}
+
+function toggleFavorite(videoId) {
+  const action = isFavorite(videoId) ? "unfavorite" : "favorite";
+  const previousPreferences = normalizePreferences({
+    blocked: { ...state.preferences.blocked },
+    favorite: { ...state.preferences.favorite }
+  });
+  state.preferences = applyPreferenceAction(action, videoId);
+  refreshPreferencesUi();
+  savePreferenceAction(action, videoId, previousPreferences);
+}
+
+function toggleBlocked(videoId) {
+  const action = isBlocked(videoId) ? "unblock" : "block";
+  const previousPreferences = normalizePreferences({
+    blocked: { ...state.preferences.blocked },
+    favorite: { ...state.preferences.favorite }
+  });
+  state.preferences = applyPreferenceAction(action, videoId);
+  refreshPreferencesUi();
+  savePreferenceAction(action, videoId, previousPreferences);
 }
 
 function toggleShowBlocked() {
@@ -632,8 +664,17 @@ function resumeActiveVideo() {
   }
 }
 
-loadProgress();
-loadPreferences();
+async function init() {
+  loadProgress();
+  try {
+    await loadPreferences();
+  } catch (error) {
+    state.preferences = normalizePreferences({});
+    elements.nowName.textContent = `收藏同步失败：${error.message}`;
+  }
+  await loadVideos();
+}
+
 elements.fullscreenButton.addEventListener("click", requestSmartFullscreen);
 elements.showBlockedButton.addEventListener("click", toggleShowBlocked);
 elements.player.addEventListener("loadedmetadata", resumeActiveVideo);
@@ -659,7 +700,6 @@ elements.player.addEventListener("ended", () => {
 window.addEventListener("pagehide", () => {
   updateVideoProgress();
   saveProgressNow();
-  savePreferencesNow();
 });
 document.addEventListener("fullscreenchange", () => {
   if (!document.fullscreenElement && screen.orientation?.unlock) {
@@ -667,7 +707,7 @@ document.addEventListener("fullscreenchange", () => {
   }
 });
 
-loadVideos().catch((error) => {
+init().catch((error) => {
   elements.nowName.textContent = `读取失败：${error.message}`;
   elements.emptyState.hidden = false;
   elements.emptyState.textContent = "无法读取视频列表";

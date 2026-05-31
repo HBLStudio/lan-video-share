@@ -7,6 +7,15 @@ const { parseArgs } = require("./config");
 const { getMimeType, isVideoFile, listVideos, resolveInsideRoot } = require("./media");
 
 const PUBLIC_DIR = path.resolve(__dirname, "..", "public");
+const DATA_DIR = process.env.LAN_VIDEO_SHARE_DATA_DIR || path.resolve(__dirname, "..", "data");
+const PREFERENCES_FILE = path.join(DATA_DIR, "preferences.json");
+const MAX_JSON_BODY_SIZE = 1024 * 1024;
+const EMPTY_PREFERENCES = {
+  blocked: {},
+  favorite: {}
+};
+
+let preferencesWriteQueue = Promise.resolve();
 
 function sendJson(res, statusCode, data) {
   const body = JSON.stringify(data);
@@ -20,6 +29,135 @@ function sendJson(res, statusCode, data) {
 
 function sendError(res, statusCode, message) {
   sendJson(res, statusCode, { error: message });
+}
+
+function isUnsafePreferenceKey(key) {
+  return key === "__proto__" || key === "constructor" || key === "prototype";
+}
+
+function normalizePreferenceMap(value) {
+  const normalized = {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return normalized;
+  }
+
+  for (const [key, timestamp] of Object.entries(value)) {
+    if (!key || isUnsafePreferenceKey(key)) {
+      continue;
+    }
+    const numberValue = Number(timestamp);
+    if (Number.isFinite(numberValue) && numberValue > 0) {
+      normalized[key] = numberValue;
+    }
+  }
+
+  return normalized;
+}
+
+function normalizePreferences(value) {
+  return {
+    blocked: normalizePreferenceMap(value?.blocked),
+    favorite: normalizePreferenceMap(value?.favorite),
+    updatedAt: typeof value?.updatedAt === "string" ? value.updatedAt : new Date(0).toISOString()
+  };
+}
+
+function applyPreferenceAction(preferences, action, videoId, now = Date.now()) {
+  if (!videoId || typeof videoId !== "string" || isUnsafePreferenceKey(videoId)) {
+    throw new Error("Invalid videoId");
+  }
+
+  const next = normalizePreferences(preferences);
+  if (action === "favorite") {
+    next.favorite[videoId] = now;
+    delete next.blocked[videoId];
+  } else if (action === "unfavorite") {
+    delete next.favorite[videoId];
+  } else if (action === "block") {
+    next.blocked[videoId] = now;
+    delete next.favorite[videoId];
+  } else if (action === "unblock") {
+    delete next.blocked[videoId];
+  } else {
+    throw new Error("Invalid action");
+  }
+  next.updatedAt = new Date(now).toISOString();
+  return next;
+}
+
+async function readPreferences() {
+  try {
+    const content = await fsp.readFile(PREFERENCES_FILE, "utf8");
+    return normalizePreferences(JSON.parse(content));
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return normalizePreferences(EMPTY_PREFERENCES);
+    }
+    throw error;
+  }
+}
+
+async function writePreferences(preferences) {
+  const normalized = normalizePreferences({
+    ...preferences,
+    updatedAt: preferences.updatedAt || new Date().toISOString()
+  });
+  await fsp.mkdir(DATA_DIR, { recursive: true });
+  const tempFile = `${PREFERENCES_FILE}.${process.pid}.${Date.now()}.tmp`;
+  await fsp.writeFile(tempFile, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  await fsp.rename(tempFile, PREFERENCES_FILE);
+  return normalized;
+}
+
+function readRequestBody(req, limit = MAX_JSON_BODY_SIZE) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > limit) {
+        reject(new Error("Request body too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
+}
+
+async function handlePreferences(req, res) {
+  if (req.method === "GET") {
+    sendJson(res, 200, await readPreferences());
+    return;
+  }
+
+  if (req.method !== "PATCH") {
+    sendError(res, 405, "Method not allowed");
+    return;
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(await readRequestBody(req));
+  } catch {
+    sendError(res, 400, "Invalid JSON");
+    return;
+  }
+
+  try {
+    const writeOperation = preferencesWriteQueue.catch(() => {}).then(async () => {
+      const current = await readPreferences();
+      const next = applyPreferenceAction(current, payload.action, payload.videoId);
+      return writePreferences(next);
+    });
+    preferencesWriteQueue = writeOperation.catch(() => {});
+    sendJson(res, 200, await writeOperation);
+  } catch (error) {
+    sendError(res, error.message === "Invalid action" || error.message === "Invalid videoId" ? 400 : 500, error.message);
+  }
 }
 
 function acceptsRequest(req, token) {
@@ -155,6 +293,16 @@ function createServer(config) {
         return;
       }
 
+      if (url.pathname === "/api/preferences") {
+        if (!acceptsRequest(req, config.token)) {
+          sendError(res, 401, "Unauthorized");
+          return;
+        }
+
+        await handlePreferences(req, res);
+        return;
+      }
+
       if (url.pathname.startsWith("/video/")) {
         if (!acceptsRequest(req, config.token)) {
           sendError(res, 401, "Unauthorized");
@@ -220,6 +368,8 @@ if (require.main === module) {
 }
 
 module.exports = {
+  applyPreferenceAction,
   createServer,
+  normalizePreferences,
   parseRange
 };

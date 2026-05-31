@@ -54,12 +54,13 @@ iPhone Safari 对 `.mp4`、`.m4v`、`.mov` 支持最好；`.mkv`、`.avi` 等格
 - “全屏播放”会在未选择视频时先播放列表第一个视频，再按视频宽高尝试锁定横屏或竖屏。iPhone Safari 不允许网页强制锁屏方向，所以需要手动旋转兜底。
 - 会在本机浏览器里记住播放进度，下次打开同一个视频会自动从上次位置前几秒继续。
 - 看完 90% 以上或播放结束的视频会标记为“已看”，并排到列表后面。
-- 可以收藏和拉黑视频；收藏优先显示，拉黑默认隐藏，可用“显示拉黑”恢复。
+- 可以收藏和拉黑视频；收藏优先显示，拉黑默认隐藏，可用“显示拉黑”恢复。收藏和拉黑保存在服务端本地 `data/preferences.json`，同一个局域网服务下多台设备共享。
 - 视频列表会懒加载预览图；长按视频卡片会从视频中段播放静音短预览，松手停止。
 - Supports PWA install: add the page to the phone home screen to open it like a standalone app. The service worker caches only the app shell, not videos or API data.
 
 ## 注意事项
 
 - 这个服务适合在可信局域网内使用，不建议直接暴露到公网。
+- 播放进度和已看状态仍保存在每台设备自己的浏览器里；收藏和拉黑状态保存在服务端本地 `data/preferences.json`，`data/` 默认不提交到 Git。
 - Windows 防火墙可能会询问是否允许 Node.js 通过网络，允许后其他设备才能访问。
 - 视频播放和拖动进度条依赖 HTTP Range 请求，本项目已支持。
